@@ -28,6 +28,7 @@ ufo enroll --name my-rover --units 2
 ufo push --title test --pilot-cmd "echo hello && date"
 ufo start --poll-secs 2
 ufo mailbox
+ufo model prompt --endpoint http://127.0.0.1:8080/v1 --model fixture-model --prompt ping
 ```
 
 `ufo auth list` shows sanitized provider IDs and redacted metadata only.

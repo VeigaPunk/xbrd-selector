@@ -2,9 +2,12 @@
 //! Shell pilots intentionally use POSIX `sh`; the implementation stays Rust-only.
 
 use anyhow::{bail, Context, Result};
+use auth::sanitize_terminal;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use fs2::FileExt;
+use reqwest::redirect::Policy;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -21,6 +24,10 @@ use uuid::Uuid;
 const APP_DIR: &str = ".ufo";
 const ROVERS_FILE: &str = "rovers.json";
 const MAILBOX_FILE: &str = "mailbox.jsonl";
+const LOCAL_MODEL_TIMEOUT_SECS: u64 = 8;
+const LOCAL_MODEL_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const LOCAL_MODEL_MAX_PROMPT_CHARS: usize = 16_384;
+const LOCAL_MODEL_MAX_MODEL_CHARS: usize = 128;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -64,6 +71,33 @@ enum Commands {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// Send one prompt to a strictly local OpenAI-compatible model endpoint
+    LocalModel {
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        prompt: String,
+    },
+    /// Model operations
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelAction {
+    /// Send one prompt to a strictly local OpenAI-compatible model endpoint
+    Prompt {
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        prompt: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -94,6 +128,36 @@ struct Operation {
     created_at: DateTime<Utc>,
     #[serde(with = "rfc3339_datetime::option")]
     finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionsResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatMessage {
+    role: Option<String>,
+    content: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionsRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessageRequest<'a>>,
+    temperature: f32,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatMessageRequest<'a> {
+    role: &'a str,
+    content: &'a str,
 }
 
 struct MailboxLock(File);
@@ -518,6 +582,132 @@ fn ensure_safe_path_component(id: &str) -> Result<()> {
     }
 }
 
+fn validate_local_model_endpoint(raw: &str) -> Result<Url> {
+    let url = Url::parse(raw).context("parse endpoint URL")?;
+    if url.scheme() != "http" {
+        bail!("endpoint must use http");
+    }
+    if url.username() != "" || url.password().is_some() {
+        bail!("endpoint userinfo is not allowed");
+    }
+    if url.query().is_some() {
+        bail!("endpoint query strings are not allowed");
+    }
+    if url.fragment().is_some() {
+        bail!("endpoint fragments are not allowed");
+    }
+    if url.path() != "/v1" && url.path() != "/v1/" {
+        bail!("endpoint path must be /v1");
+    }
+    match url.port() {
+        Some(port) if port != 0 => {}
+        _ => bail!("endpoint must include an explicit nonzero port"),
+    }
+    let host = url.host_str().context("endpoint must include a host")?;
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .context("endpoint host must be a literal loopback IP address")?;
+    match ip {
+        std::net::IpAddr::V4(ipv4) => {
+            if !ipv4.is_loopback() || ipv4.is_unspecified() || ipv4.is_broadcast() {
+                bail!("endpoint must target a local loopback address");
+            }
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            if ipv6 != std::net::Ipv6Addr::LOCALHOST {
+                bail!("endpoint must target a local loopback address");
+            }
+        }
+    }
+    Ok(url)
+}
+
+fn validate_model_id(raw: &str) -> Result<&str> {
+    let model = raw.trim();
+    if model.is_empty() {
+        bail!("model id must not be empty");
+    }
+    if model.chars().count() > LOCAL_MODEL_MAX_MODEL_CHARS {
+        bail!("model id too long");
+    }
+    if model.chars().any(|ch| ch.is_control()) {
+        bail!("model id contains control characters");
+    }
+    Ok(model)
+}
+
+fn local_model_chat_url(endpoint: &Url) -> Result<Url> {
+    let mut endpoint = endpoint.clone();
+    if endpoint.path() == "/v1" {
+        endpoint.set_path("/v1/");
+    }
+    endpoint
+        .join("chat/completions")
+        .context("build chat/completions URL")
+}
+
+async fn post_local_model_prompt(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
+    if prompt.chars().count() > LOCAL_MODEL_MAX_PROMPT_CHARS {
+        bail!("prompt too large");
+    }
+    let endpoint = validate_local_model_endpoint(endpoint)?;
+    let model = validate_model_id(model)?;
+    let url = local_model_chat_url(&endpoint)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(LOCAL_MODEL_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(2))
+        .no_proxy()
+        .redirect(Policy::none())
+        .build()
+        .context("build HTTP client")?;
+    let request = ChatCompletionsRequest {
+        model,
+        messages: vec![ChatMessageRequest {
+            role: "user",
+            content: prompt,
+        }],
+        temperature: 0.0,
+        stream: false,
+    };
+    let response = client
+        .post(url)
+        .json(&request)
+        .send()
+        .await
+        .context("send local model request")?;
+    if !response.status().is_success() {
+        bail!("local model request failed: {}", response.status());
+    }
+
+    let mut size = 0usize;
+    let mut body = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("read local model response")?
+    {
+        size += chunk.len();
+        if size > LOCAL_MODEL_MAX_RESPONSE_BYTES {
+            bail!("local model response exceeded size limit");
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let parsed: ChatCompletionsResponse =
+        serde_json::from_slice(&body).context("parse local model response")?;
+    let content = parsed
+        .choices
+        .into_iter()
+        .find_map(|choice| match choice.message.role.as_deref() {
+            Some("assistant") => choice.message.content,
+            None if choice.message.content.is_some() => choice.message.content,
+            _ => None,
+        })
+        .context("local model response missing content")?;
+    Ok(sanitize_terminal(&content))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -620,6 +810,24 @@ async fn main() -> Result<()> {
                 println!("skipped malformed entries: {}", snapshot.malformed_entries);
             }
         },
+        Commands::LocalModel {
+            endpoint,
+            model,
+            prompt,
+        } => {
+            let content = post_local_model_prompt(&endpoint, &model, &prompt).await?;
+            println!("{}", content);
+        }
+        Commands::Model { action } => match action {
+            ModelAction::Prompt {
+                endpoint,
+                model,
+                prompt,
+            } => {
+                let content = post_local_model_prompt(&endpoint, &model, &prompt).await?;
+                println!("{}", content);
+            }
+        },
     }
     Ok(())
 }
@@ -627,8 +835,18 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::{Arc, Barrier};
+    use std::sync::{Mutex, OnceLock};
     use std::thread;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ufo-cli-{}", Uuid::new_v4()));
@@ -647,6 +865,74 @@ mod tests {
         }
     }
 
+    fn start_fixture_server<F>(handler: F) -> (String, thread::JoinHandle<()>)
+    where
+        F: FnOnce(String, Vec<(String, String)>, Vec<u8>) -> (u16, String) + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!(
+            "http://127.0.0.1:{}/v1",
+            listener.local_addr().unwrap().port()
+        );
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            let header_end;
+            let content_length;
+            loop {
+                let n = stream.read(&mut tmp).unwrap();
+                assert!(n > 0, "request ended before headers");
+                buf.extend_from_slice(tmp.get(..n).unwrap());
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    header_end = pos + 4;
+                    let headers = String::from_utf8(buf[..header_end].to_vec()).unwrap();
+                    content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            if name.eq_ignore_ascii_case("content-length") {
+                                Some(value.trim().parse::<usize>().unwrap())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= header_end + content_length {
+                        break;
+                    }
+                    while buf.len() < header_end + content_length {
+                        let n = stream.read(&mut tmp).unwrap();
+                        assert!(n > 0, "request ended before body");
+                        buf.extend_from_slice(tmp.get(..n).unwrap());
+                    }
+                    break;
+                }
+            }
+
+            let header_text = String::from_utf8(buf[..header_end].to_vec()).unwrap();
+            let mut lines = header_text.lines();
+            let request_line = lines.next().unwrap().to_string();
+            let headers = lines
+                .filter_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    Some((name.trim().to_string(), value.trim().to_string()))
+                })
+                .collect::<Vec<_>>();
+            let body = buf[header_end..header_end + content_length].to_vec();
+            let (status, response_body) = handler(request_line, headers, body);
+            let response = format!(
+                "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                response_body.len(),
+                response_body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+        (endpoint, handle)
+    }
+
     #[test]
     fn legacy_rfc3339_operation_timestamp_parses() {
         let op: Operation = serde_json::from_str(
@@ -654,6 +940,91 @@ mod tests {
         )
         .unwrap();
         assert_eq!(op.created_at.to_rfc3339(), "2024-01-02T03:04:05+00:00");
+    }
+
+    #[test]
+    fn local_model_endpoint_rejects_untrusted_targets() {
+        for bad in [
+            "https://127.0.0.1:8080/v1",
+            "http://8.8.8.8:8080/v1",
+            "http://169.254.169.254:8080/v1",
+            "http://0.0.0.0:8080/v1",
+            "http://[::]:8080/v1",
+            "http://localhost:8080/v1",
+            "http://user@127.0.0.1:8080/v1",
+            "http://127.0.0.1:8080/v1?x=1",
+            "http://127.0.0.1:8080/v1#frag",
+            "http://127.0.0.1/v1",
+        ] {
+            assert!(
+                validate_local_model_endpoint(bad).is_err(),
+                "accepted {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_model_one_prompt() {
+        let _guard = env_guard();
+        let (endpoint, handle) = start_fixture_server(|request_line, headers, body| {
+            assert_eq!(request_line, "POST /v1/chat/completions HTTP/1.1");
+            assert!(headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("content-type")
+                    && value == "application/json"));
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["model"], "fixture-model");
+            assert_eq!(json["temperature"], 0.0);
+            assert_eq!(json["stream"], false);
+            assert_eq!(json["messages"][0]["role"], "user");
+            assert_eq!(json["messages"][0]["content"], "ping");
+            (
+                200,
+                serde_json::json!({
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "pong"}}
+                    ]
+                })
+                .to_string(),
+            )
+        });
+
+        let saved = [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ]
+        .into_iter()
+        .map(|key| (key, env::var_os(key)))
+        .collect::<Vec<_>>();
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            env::set_var(key, "http://127.0.0.1:9");
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let content = rt
+            .block_on(post_local_model_prompt(&endpoint, "fixture-model", "ping"))
+            .unwrap();
+        assert_eq!(content, "pong");
+
+        for (key, value) in saved {
+            match value {
+                Some(value) => env::set_var(key, value),
+                None => env::remove_var(key),
+            }
+        }
+
+        handle.join().unwrap();
     }
 
     #[test]
