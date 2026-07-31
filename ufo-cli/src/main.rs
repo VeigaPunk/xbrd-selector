@@ -22,6 +22,7 @@ pub use ufo_auth::sanitize_terminal;
 use uuid::Uuid;
 
 mod opencode_local_models;
+mod tui;
 use opencode_local_models::{
     format_local_model_entry, load_local_model_catalog, LocalModelCatalog,
 };
@@ -89,6 +90,11 @@ enum Commands {
     Model {
         #[command(subcommand)]
         action: ModelAction,
+    },
+    /// Interactive TUI dashboard and chat shell
+    Tui {
+        #[arg(long, default_value_t = 1_000)]
+        refresh_ms: u64,
     },
 }
 
@@ -262,7 +268,7 @@ fn verify_logout_summary(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RoverEntry {
+pub(crate) struct RoverEntry {
     id: String,
     name: String,
     units: u32,
@@ -272,7 +278,7 @@ struct RoverEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Operation {
+pub(crate) struct Operation {
     id: String,
     title: String,
     pilot_cmd: String,
@@ -554,7 +560,7 @@ fn atomic_write_string(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_rovers() -> Result<Vec<RoverEntry>> {
+pub(crate) fn load_rovers() -> Result<Vec<RoverEntry>> {
     let p = rovers_path()?;
     if !p.exists() {
         return Ok(vec![]);
@@ -585,12 +591,12 @@ fn read_mailbox(path: &Path) -> Result<Vec<Operation>> {
     Ok(ops)
 }
 
-fn load_mailbox_from(path: &Path) -> Result<Vec<Operation>> {
+pub(crate) fn load_mailbox_from(path: &Path) -> Result<Vec<Operation>> {
     let _lock = acquire_mailbox_lock(path, true)?;
     read_mailbox(path)
 }
 
-fn append_op_to(path: &Path, op: &Operation) -> Result<()> {
+pub(crate) fn append_op_to(path: &Path, op: &Operation) -> Result<()> {
     let _lock = acquire_mailbox_lock(path, false)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(op)?)?;
@@ -600,7 +606,7 @@ fn append_op_to(path: &Path, op: &Operation) -> Result<()> {
     Ok(())
 }
 
-fn write_mailbox_locked(path: &Path, ops: &[Operation]) -> Result<()> {
+pub(crate) fn write_mailbox_locked(path: &Path, ops: &[Operation]) -> Result<()> {
     let mut body = String::new();
     for op in ops {
         body.push_str(&serde_json::to_string(op)?);
@@ -609,7 +615,7 @@ fn write_mailbox_locked(path: &Path, ops: &[Operation]) -> Result<()> {
     atomic_write_string(path, &body)
 }
 
-fn claim_next_mailbox_op(path: &Path) -> Result<Option<Operation>> {
+pub(crate) fn claim_next_mailbox_op(path: &Path) -> Result<Option<Operation>> {
     let _lock = acquire_mailbox_lock(path, false)?;
     let mut ops = read_mailbox(path)?;
     let Some(index) = ops.iter().position(|op| op.status == "queued") else {
@@ -624,7 +630,7 @@ fn claim_next_mailbox_op(path: &Path) -> Result<Option<Operation>> {
     Ok(Some(claimed))
 }
 
-fn finalize_mailbox_op(
+pub(crate) fn finalize_mailbox_op(
     path: &Path,
     op_id: &str,
     status: &str,
@@ -825,7 +831,7 @@ fn validate_provider_id(raw: &str) -> Result<&str> {
     Ok(provider)
 }
 
-fn local_model_chat_url(endpoint: &Url) -> Result<Url> {
+pub(crate) fn local_model_chat_url(endpoint: &Url) -> Result<Url> {
     let mut endpoint = endpoint.clone();
     if endpoint.path() == "/v1" {
         endpoint.set_path("/v1/");
@@ -835,7 +841,11 @@ fn local_model_chat_url(endpoint: &Url) -> Result<Url> {
         .context("build chat/completions URL")
 }
 
-async fn post_local_model_prompt(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
+pub(crate) async fn post_local_model_prompt(
+    endpoint: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<String> {
     if prompt.chars().count() > LOCAL_MODEL_MAX_PROMPT_CHARS {
         bail!("prompt too large");
     }
@@ -897,7 +907,7 @@ async fn post_local_model_prompt(endpoint: &str, model: &str, prompt: &str) -> R
     Ok(sanitize_terminal(&content))
 }
 
-fn local_model_catalog() -> Result<LocalModelCatalog> {
+pub(crate) fn local_model_catalog() -> Result<LocalModelCatalog> {
     load_local_model_catalog()
 }
 
@@ -1066,6 +1076,9 @@ async fn main() -> Result<()> {
                 println!("{}", content);
             }
         },
+        Commands::Tui { refresh_ms } => {
+            tui::run_tui(refresh_ms).await?;
+        }
     }
     Ok(())
 }

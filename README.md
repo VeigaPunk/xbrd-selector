@@ -4,6 +4,7 @@ Pure-Rust UFO rover CLIs.
 
 - `ufo-cli/` — local JSONL mailbox (`~/.ufo/mailbox.jsonl`)
 - `ufo-cli-beads/` — beads (`bd >= 1.1.2`) mailbox wrapper
+- `ufo tui` — Ratatui dashboard/chat shell in `ufo-cli`
 
 Implementation is Rust-only. Pilot commands intentionally run through POSIX `sh`.
 The beads variant additionally requires `bd >= 1.1.2` on PATH.
@@ -55,8 +56,10 @@ Warning: this variant requires `bd` already installed and a project that has run
 ufo enroll
 ufo auth list
 ufo model list
+ufo tui
 ufo push --title "do X" --pilot-cmd "cargo test" --project /path/to/project
 ufo start --project /path/to/project
 ```
 
 `ufo model prompt --provider ollama/llama3.2 --prompt hello` resolves a local provider/model pair from config or a built-in loopback template.
+`ufo tui` opens the Ratatui dashboard/chat shell.

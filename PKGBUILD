@@ -2,7 +2,7 @@
 
 pkgname=ufo-cli
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Pure Rust UFO local rover CLI"
 arch=('x86_64')
 url="https://github.com/VeigaPunk/ufogrokbd"
