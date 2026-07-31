@@ -22,4 +22,5 @@ dirs = "=5.0.1"
 uuid = { version = "=1.7.0", features = ["v4", "serde"] }
 fs2 = "=0.4.3"
 reqwest = { version = "=0.12.12", default-features = false, features = ["json", "rustls-tls"] }
+json5 = "=0.4.1"
 ufo-auth = { path = "../ufo-auth" }

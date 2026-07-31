@@ -11,6 +11,7 @@ The beads variant additionally requires `bd >= 1.1.2` on PATH.
 Auth is read-only from OpenCode: `OPENCODE_AUTH_CONTENT`, then `XDG_DATA_HOME/opencode/auth.json`, then `~/.local/share/opencode/auth.json`.
 OAuth login/logout is delegated to installed `opencode` (`auth login --pure --provider <id>`, `auth logout --provider <id>`).
 Only `openai` and `github-copilot` are allowed initially; API and wellknown entries are listed as ignored.
+Local model discovery is read-only from OpenCode config: `OPENCODE_CONFIG_CONTENT`, then `XDG_CONFIG_HOME/opencode/opencode.json(c)`, then `~/.config/opencode/opencode.json(c)`.
 
 ## Install
 
@@ -53,6 +54,9 @@ Warning: this variant requires `bd` already installed and a project that has run
 ```bash
 ufo enroll
 ufo auth list
+ufo model list
 ufo push --title "do X" --pilot-cmd "cargo test" --project /path/to/project
 ufo start --project /path/to/project
 ```
+
+`ufo model prompt --provider ollama/llama3.2 --prompt hello` resolves a local provider/model pair from config or a built-in loopback template.

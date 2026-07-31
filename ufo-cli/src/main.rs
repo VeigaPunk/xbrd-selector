@@ -2,7 +2,6 @@
 //! Shell pilots intentionally use POSIX `sh`; the implementation stays Rust-only.
 
 use anyhow::{bail, Context, Result};
-use auth::sanitize_terminal;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
@@ -18,8 +17,14 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::sleep;
-use ufo_auth as auth;
+pub use ufo_auth as auth;
+pub use ufo_auth::sanitize_terminal;
 use uuid::Uuid;
+
+mod opencode_local_models;
+use opencode_local_models::{
+    format_local_model_entry, load_local_model_catalog, LocalModelCatalog,
+};
 
 const APP_DIR: &str = ".ufo";
 const ROVERS_FILE: &str = "rovers.json";
@@ -89,12 +94,16 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ModelAction {
+    /// List configured local provider/model pairs
+    List,
     /// Send one prompt to a strictly local OpenAI-compatible model endpoint
     Prompt {
+        #[arg(long, value_name = "PROVIDER/MODEL")]
+        provider: Option<String>,
         #[arg(long)]
-        endpoint: String,
+        endpoint: Option<String>,
         #[arg(long)]
-        model: String,
+        model: Option<String>,
         #[arg(long)]
         prompt: String,
     },
@@ -774,10 +783,46 @@ fn validate_model_id(raw: &str) -> Result<&str> {
     if model.chars().count() > LOCAL_MODEL_MAX_MODEL_CHARS {
         bail!("model id too long");
     }
-    if model.chars().any(|ch| ch.is_control()) {
-        bail!("model id contains control characters");
+    let mut chars = model.chars();
+    let Some(first) = chars.next() else {
+        bail!("model id must not be empty");
+    };
+    if !first.is_ascii_alphanumeric() {
+        bail!("model id must start with an ASCII alphanumeric");
+    }
+    if chars.any(|ch| {
+        ch.is_control()
+            || ch.is_whitespace()
+            || !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/' | '+'))
+    }) {
+        bail!("model id contains invalid characters");
     }
     Ok(model)
+}
+
+fn validate_provider_id(raw: &str) -> Result<&str> {
+    let provider = raw.trim();
+    if provider.is_empty() {
+        bail!("provider id must not be empty");
+    }
+    if provider.chars().count() > 64 {
+        bail!("provider id too long");
+    }
+    let mut chars = provider.chars();
+    let Some(first) = chars.next() else {
+        bail!("provider id must not be empty");
+    };
+    if !first.is_ascii_alphanumeric() {
+        bail!("provider id must start with an ASCII alphanumeric");
+    }
+    if chars.any(|ch| {
+        ch.is_control()
+            || ch.is_whitespace()
+            || !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    }) {
+        bail!("provider id contains invalid characters");
+    }
+    Ok(provider)
 }
 
 fn local_model_chat_url(endpoint: &Url) -> Result<Url> {
@@ -850,6 +895,10 @@ async fn post_local_model_prompt(endpoint: &str, model: &str, prompt: &str) -> R
         })
         .context("local model response missing content")?;
     Ok(sanitize_terminal(&content))
+}
+
+fn local_model_catalog() -> Result<LocalModelCatalog> {
+    load_local_model_catalog()
 }
 
 #[tokio::main]
@@ -978,12 +1027,42 @@ async fn main() -> Result<()> {
             println!("{}", content);
         }
         Commands::Model { action } => match action {
+            ModelAction::List => {
+                let catalog = local_model_catalog()?;
+                if catalog.is_empty() {
+                    println!(
+                        "[ufo] no local providers (OpenCode config: OPENCODE_CONFIG_CONTENT, then XDG_CONFIG_HOME/opencode/opencode.json(c), then ~/.config/opencode/opencode.json(c))"
+                    );
+                } else {
+                    for entry in catalog.entries() {
+                        println!("{}", format_local_model_entry(&entry));
+                    }
+                }
+                if catalog.malformed_entries > 0 {
+                    println!(
+                        "[ufo] skipped malformed local model entries: {}",
+                        catalog.malformed_entries
+                    );
+                }
+            }
             ModelAction::Prompt {
+                provider,
                 endpoint,
                 model,
                 prompt,
             } => {
-                let content = post_local_model_prompt(&endpoint, &model, &prompt).await?;
+                let (endpoint, model) = match (provider, endpoint, model) {
+                    (Some(selection), None, None) => {
+                        let catalog = local_model_catalog()?;
+                        catalog.resolve_selection(&selection)?
+                    }
+                    (None, Some(endpoint), Some(model)) => (
+                        validate_local_model_endpoint(&endpoint)?,
+                        validate_model_id(&model)?.to_string(),
+                    ),
+                    _ => bail!("use either --provider provider/model or --endpoint + --model"),
+                };
+                let content = post_local_model_prompt(endpoint.as_str(), &model, &prompt).await?;
                 println!("{}", content);
             }
         },
@@ -1120,6 +1199,162 @@ mod tests {
                 "accepted {bad}"
             );
         }
+    }
+
+    #[test]
+    fn opencode_local_provider_config() {
+        let _guard = env_guard();
+        let snapshot = opencode_local_models::parse_local_model_catalog(
+            r#"// local providers
+            {
+                providers: {
+                    ollama: {
+                        options: { baseURL: "http://127.0.0.1:11434/v1", },
+                        models: ["llama3.2", "mistral:7b",],
+                        apiKey: "secret",
+                    },
+                    remote: {
+                        options: { baseURL: "http://8.8.8.8:8080/v1" },
+                        models: ["bad"],
+                    },
+                },
+            }
+            "#,
+            opencode_local_models::LocalModelSource::Env,
+            None,
+        )
+        .unwrap();
+
+        let entries = snapshot.entries();
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.provider_id == "ollama" && entry.model_id == "llama3.2"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.provider_id == "ollama" && entry.model_id == "mistral:7b"));
+        assert_eq!(snapshot.malformed_entries, 1);
+    }
+
+    #[test]
+    fn opencode_local_provider_precedence() {
+        let _guard = env_guard();
+        let home = temp_dir();
+        let xdg = temp_dir();
+        let xdg_cfg = xdg.join("opencode/opencode.jsonc");
+        let home_cfg = home.join(".config/opencode/opencode.jsonc");
+        fs::create_dir_all(xdg_cfg.parent().unwrap()).unwrap();
+        fs::create_dir_all(home_cfg.parent().unwrap()).unwrap();
+        fs::write(
+            &xdg_cfg,
+            r#"{ providers: { xdg: { options: { baseURL: "http://127.0.0.1:1234/v1" }, models: ["x"] } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            &home_cfg,
+            r#"{ providers: { home: { options: { baseURL: "http://127.0.0.1:8080/v1" }, models: ["h"] } } }"#,
+        )
+        .unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("OPENCODE_CONFIG_CONTENT");
+
+        let snapshot = opencode_local_models::load_local_model_catalog().unwrap();
+        let entries = snapshot.entries();
+        assert_eq!(entries[0].provider_id, "xdg");
+
+        std::env::set_var(
+            "OPENCODE_CONFIG_CONTENT",
+            r#"{ providers: { env: { options: { baseURL: "http://127.0.0.1:11434/v1" }, models: ["e"] } } }"#,
+        );
+        let snapshot = opencode_local_models::load_local_model_catalog().unwrap();
+        assert_eq!(snapshot.entries()[0].provider_id, "env");
+        std::env::remove_var("OPENCODE_CONFIG_CONTENT");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("HOME");
+    }
+
+    #[test]
+    fn opencode_local_provider_rejection() {
+        assert!(validate_local_model_endpoint("http://localhost:11434/v1").is_err());
+        assert!(validate_local_model_endpoint("http://8.8.8.8:11434/v1").is_err());
+        assert!(validate_provider_id("bad provider").is_err());
+    }
+
+    #[test]
+    fn opencode_local_provider_builtin_template_selection() {
+        let catalog = opencode_local_models::LocalModelCatalog::empty();
+        let (endpoint, model) = catalog.resolve_selection("ollama/llama3.2").unwrap();
+        assert_eq!(endpoint.as_str(), "http://127.0.0.1:11434/v1");
+        assert_eq!(model, "llama3.2");
+    }
+
+    #[test]
+    fn opencode_local_provider_malformed_config_diagnostics() {
+        let err = opencode_local_models::parse_local_model_catalog(
+            r#"{ providers: { bad: { options: { baseURL: "http://127.0.0.1:11434/v1" }, models: ["ok", 1,], apiKey: "secret" } "#,
+            opencode_local_models::LocalModelSource::Env,
+            None,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("OpenCode config JSONC"));
+        assert!(!msg.contains("secret"));
+    }
+
+    #[test]
+    fn opencode_local_provider_no_secret_output() {
+        let snapshot = opencode_local_models::parse_local_model_catalog(
+            r#"{ providers: { ollama: { options: { baseURL: "http://127.0.0.1:11434/v1" }, models: ["llama3.2"], apiKey: "super-secret" } } }"#,
+            opencode_local_models::LocalModelSource::Env,
+            None,
+        )
+        .unwrap();
+        let rendered = snapshot
+            .entries()
+            .into_iter()
+            .map(|entry| format_local_model_entry(&entry))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("super-secret"));
+        assert!(!rendered.contains("apiKey"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn opencode_local_provider_prompt_selection_uses_config_endpoint() {
+        let _guard = env_guard();
+        let (endpoint, handle) = start_fixture_server(|request_line, _, body| {
+            assert_eq!(request_line, "POST /v1/chat/completions HTTP/1.1");
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["model"], "llama3.2");
+            (
+                200,
+                serde_json::json!({
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "ok"}}
+                    ]
+                })
+                .to_string(),
+            )
+        });
+        std::env::set_var(
+            "OPENCODE_CONFIG_CONTENT",
+            format!(
+                r#"{{ providers: {{ ollama: {{ options: {{ baseURL: "{}" }}, models: ["llama3.2"] }} }} }}"#,
+                endpoint
+            ),
+        );
+
+        let catalog = local_model_catalog().unwrap();
+        let (resolved_endpoint, resolved_model) =
+            catalog.resolve_selection("ollama/llama3.2").unwrap();
+        let content = post_local_model_prompt(resolved_endpoint.as_str(), &resolved_model, "ping")
+            .await
+            .unwrap();
+        assert_eq!(content, "ok");
+        std::env::remove_var("OPENCODE_CONFIG_CONTENT");
+        handle.join().unwrap();
     }
 
     #[test]
