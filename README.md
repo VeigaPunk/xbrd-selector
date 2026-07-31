@@ -1,18 +1,20 @@
-# ufogrokbd
+# xbrd-selector
 
-Pure-Rust UFO rover CLIs.
+Pure-Rust xbrd-selector rover CLIs.
 
-- `ufo-cli/` — local JSONL mailbox (`~/.ufo/mailbox.jsonl`)
-- `ufo-cli-beads/` — beads (`bd >= 1.1.2`) mailbox wrapper
-- `ufo tui` — Ratatui dashboard/chat shell in `ufo-cli`
+- `ufo-cli/` — primary crate for the `xbrd-selector` binary
+- `ufo-cli-beads/` — separate legacy beads (`bd >= 1.1.2`) mailbox wrapper
+- `xbrd-selector tui` — Ratatui dashboard/chat shell in the primary crate
 
-Implementation is Rust-only. Pilot commands intentionally run through POSIX `sh`.
+Implementation is Rust-only. The distributed artifact is a self-contained compiled executable; Bun/Node/npm/JS are intentionally not runtime or build dependencies under this Rust-only directive.
+Pilot commands intentionally run through POSIX `sh`.
 The beads variant additionally requires `bd >= 1.1.2` on PATH.
 
 Auth is read-only from OpenCode: `OPENCODE_AUTH_CONTENT`, then `XDG_DATA_HOME/opencode/auth.json`, then `~/.local/share/opencode/auth.json`.
 OAuth login/logout is delegated to installed `opencode` (`auth login --pure --provider <id>`, `auth logout --provider <id>`).
 Only `openai` and `github-copilot` are allowed initially; API and wellknown entries are listed as ignored.
 Local model discovery is read-only from OpenCode config: `OPENCODE_CONFIG_CONTENT`, then `XDG_CONFIG_HOME/opencode/opencode.json(c)`, then `~/.config/opencode/opencode.json(c)`.
+Legacy-compatible mailbox storage remains under `~/.ufo/` for now.
 
 ## Install
 
@@ -22,11 +24,7 @@ Local model discovery is read-only from OpenCode config: `OPENCODE_CONFIG_CONTEN
 cargo install --path ufo-cli --locked
 ```
 
-Beads install (replaces the same `ufo` binary):
-
-```bash
-cargo install --path ufo-cli-beads --locked --force
-```
+This installs the primary `xbrd-selector` binary. Package builds may also stage a `ufo` compatibility symlink to the same executable.
 
 ### Arch / makepkg
 
@@ -36,16 +34,18 @@ From the repo root of this checkout:
 makepkg -si
 ```
 
-That builds only `ufo-cli` from the local source tree and installs the binary as `ufo`.
-The `ufo-cli-beads` crate is a separate local variant and also installs `ufo`.
+That builds only `xbrd-selector` from the local source tree and installs the primary binary as `xbrd-selector`.
+The package may also provide `/usr/bin/ufo` as a compatibility symlink to `xbrd-selector`.
+The `ufo-cli-beads` crate remains a separate legacy variant and is not packaged as selector.
+The Arch package filename follows `xbrd-selector-<pkgver>-<pkgrel>-x86_64.pkg.tar.zst`.
 
 ## Local mailbox
 
 ```bash
-ufo enroll --name rover-1
-ufo auth status
-ufo push --title test --pilot-cmd "echo hello"
-ufo start
+xbrd-selector enroll --name rover-1
+xbrd-selector auth status
+xbrd-selector push --title test --pilot-cmd "echo hello"
+xbrd-selector start
 ```
 
 ## Beads

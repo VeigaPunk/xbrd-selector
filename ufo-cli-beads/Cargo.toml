@@ -2,10 +2,10 @@
 name = "ufo-cli-beads"
 version = "0.1.0"
 edition = "2021"
-description = "UFO local rover CLI (pure Rust) using beads as mailbox substrate"
+description = "Legacy UFO local rover CLI (pure Rust) using beads as mailbox substrate"
 readme = "README.md"
 license = "BSD-3-Clause"
-repository = "https://github.com/VeigaPunk/ufogrokbd"
+repository = "https://github.com/VeigaPunk/xbrd-selector"
 
 [[bin]]
 name = "ufo"

@@ -1,11 +1,11 @@
 # Maintainer: VeigaPunk
 
-pkgname=ufo-cli
+pkgname=xbrd-selector
 pkgver=0.1.0
 pkgrel=2
-pkgdesc="Pure Rust UFO local rover CLI"
+pkgdesc="Pure Rust xbrd-selector local rover CLI"
 arch=('x86_64')
-url="https://github.com/VeigaPunk/ufogrokbd"
+url="https://github.com/VeigaPunk/xbrd-selector"
 license=('BSD-3-Clause')
 depends=('glibc' 'gcc-libs' 'libgcc')
 makedepends=('cargo')
@@ -14,11 +14,14 @@ source=()
 sha256sums=()
 
 build() {
-  cargo build --release --locked --manifest-path "$startdir/ufo-cli/Cargo.toml"
+  env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS -u CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS \
+    -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+    cargo build --release --locked --manifest-path "$startdir/ufo-cli/Cargo.toml"
 }
 
 package() {
-  install -Dm755 "$startdir/ufo-cli/target/release/ufo" "$pkgdir/usr/bin/ufo"
+  install -Dm755 "$startdir/ufo-cli/target/release/xbrd-selector" "$pkgdir/usr/bin/xbrd-selector"
+  ln -s xbrd-selector "$pkgdir/usr/bin/ufo"
   install -Dm644 "$startdir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

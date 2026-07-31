@@ -1,14 +1,14 @@
 [package]
-name = "ufo-cli"
+name = "xbrd-selector"
 version = "0.1.0"
 edition = "2021"
-description = "UFO local rover CLI (pure Rust, local mailbox) - accepts and runs operations on the host."
+description = "xbrd-selector local rover CLI (pure Rust, local mailbox) - accepts and runs operations on the host."
 readme = "README.md"
 license = "BSD-3-Clause"
-repository = "https://github.com/VeigaPunk/ufogrokbd"
+repository = "https://github.com/VeigaPunk/xbrd-selector"
 
 [[bin]]
-name = "ufo"
+name = "xbrd-selector"
 path = "src/main.rs"
 
 [dependencies]

@@ -704,7 +704,11 @@ fn render_tabs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     .collect::<Vec<_>>();
     let tabs = Tabs::new(titles)
         .select(app.screen.index())
-        .block(Block::default().title("ufo-cli").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("xbrd-selector")
+                .borders(Borders::ALL),
+        )
         .style(Style::default().fg(Color::Gray))
         .highlight_style(
             Style::default()

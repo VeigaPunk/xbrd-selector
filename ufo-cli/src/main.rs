@@ -1,4 +1,4 @@
-//! ufo-cli — pure Rust local rover (mailbox substrate = JSONL file)
+//! xbrd-selector — pure Rust local rover (mailbox substrate = JSONL file)
 //! Shell pilots intentionally use POSIX `sh`; the implementation stays Rust-only.
 
 use anyhow::{bail, Context, Result};
@@ -37,8 +37,8 @@ const LOCAL_MODEL_MAX_MODEL_CHARS: usize = 128;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "ufo",
-    about = "UFO local rover CLI (pure Rust, local JSONL mailbox)"
+    name = "xbrd-selector",
+    about = "xbrd-selector local rover CLI (pure Rust, local JSONL mailbox)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Enroll a local rover (stores identity under ~/.ufo)
+    /// Enroll a local rover (stores identity under legacy-compatible ~/.ufo)
     Enroll {
         #[arg(long, default_value = "local")]
         name: String,
@@ -56,7 +56,7 @@ enum Commands {
         #[arg(long)]
         tags: Vec<String>,
     },
-    /// Start the rover loop: pull ops from local mailbox, execute in worktrees
+    /// Start the rover loop: pull ops from local mailbox, execute in work directories
     Start {
         #[arg(long)]
         headless: bool,
@@ -117,7 +117,7 @@ enum ModelAction {
 
 #[derive(Subcommand, Debug)]
 enum AuthAction {
-    /// List providers from OpenCode ~/.local/share/opencode/auth.json or ~/.ufo/auth.json
+    /// List providers from OpenCode ~/.local/share/opencode/auth.json or legacy-compatible ~/.ufo/auth.json
     List,
     /// List provider policy and OAuth state
     Providers,
@@ -533,7 +533,9 @@ fn atomic_write_string(path: &Path, contents: &str) -> Result<()> {
 
     let tmp_path = parent.join(format!(
         ".{}.{}.tmp",
-        path.file_name().and_then(OsStr::to_str).unwrap_or("ufo"),
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("xbrd-selector"),
         Uuid::new_v4()
     ));
     let mut cleanup = TempWrite {
@@ -669,7 +671,7 @@ async fn execute_op(op: &Operation, work_root: &Path) -> Result<()> {
     ensure_no_symlink_components(&op_dir)?;
     fs::create_dir_all(&op_dir)?;
     set_private_mode(&op_dir, true)?;
-    println!("[ufo] running op {} in {:?}", op.id, op_dir);
+    println!("[xbrd-selector] running op {} in {:?}", op.id, op_dir);
 
     let status = Command::new("sh")
         .arg("-c")
@@ -682,7 +684,7 @@ async fn execute_op(op: &Operation, work_root: &Path) -> Result<()> {
         .context("pilot spawn failed")?;
 
     if status.success() {
-        println!("[ufo] op {} done", op.id);
+        println!("[xbrd-selector] op {} done", op.id);
         Ok(())
     } else {
         bail!("pilot exited {:?}", status.code())
@@ -695,7 +697,7 @@ async fn rover_loop(poll_secs: u64) -> Result<()> {
     fs::create_dir_all(&work_root)?;
     set_private_mode(&work_root, true)?;
     println!(
-        "[ufo] rover loop started, mailbox={:?}, poll={}s",
+        "[xbrd-selector] rover loop started, mailbox={:?}, poll={}s",
         mailbox_path()?,
         poll_secs
     );
@@ -707,13 +709,13 @@ async fn rover_loop(poll_secs: u64) -> Result<()> {
                 let outcome = match execute_op(&op, &work_root).await {
                     Ok(()) => "done",
                     Err(e) => {
-                        eprintln!("[ufo] op {} failed: {e:#}", op.id);
+                        eprintln!("[xbrd-selector] op {} failed: {e:#}", op.id);
                         "failed"
                     }
                 };
                 let finished_at = Some(Utc::now());
                 if !finalize_mailbox_op(&mailbox, &op.id, outcome, finished_at)? {
-                    eprintln!("[ufo] finalize lost op {}", op.id);
+                    eprintln!("[xbrd-selector] finalize lost op {}", op.id);
                 }
             }
             None => sleep(Duration::from_secs(poll_secs)).await,
@@ -924,7 +926,10 @@ async fn main() -> Result<()> {
                 tags,
                 enrolled_at: Utc::now(),
             };
-            println!("[ufo] enrolled rover id={} name={}", entry.id, entry.name);
+            println!(
+                "[xbrd-selector] enrolled rover id={} name={}",
+                entry.id, entry.name
+            );
             rovers.push(entry);
             save_rovers(&rovers)?;
         }
@@ -934,9 +939,9 @@ async fn main() -> Result<()> {
         } => {
             let rovers = load_rovers()?;
             if rovers.is_empty() {
-                bail!("no rovers enrolled — run `ufo enroll` first");
+                bail!("no rovers enrolled — run `xbrd-selector enroll` first");
             }
-            println!("[ufo] {} rover(s) loaded", rovers.len());
+            println!("[xbrd-selector] {} rover(s) loaded", rovers.len());
             rover_loop(poll_secs).await?;
         }
         Commands::Push { title, pilot_cmd } => {
@@ -949,7 +954,7 @@ async fn main() -> Result<()> {
                 finished_at: None,
             };
             append_op(&op)?;
-            println!("[ufo] pushed op id={} title={}", op.id, op.title);
+            println!("[xbrd-selector] pushed op id={} title={}", op.id, op.title);
         }
         Commands::Mailbox => {
             let ops = load_mailbox()?;
@@ -966,7 +971,7 @@ async fn main() -> Result<()> {
                 let list = snapshot.store.summaries(snapshot.source.clone());
                 if list.is_empty() {
                     println!(
-                        "[ufo] no providers (OpenCode auth: env, XDG_DATA_HOME/opencode/auth.json, then ~/.local/share/opencode/auth.json)"
+                        "[xbrd-selector] no providers (OpenCode auth: env, XDG_DATA_HOME/opencode/auth.json, then ~/.local/share/opencode/auth.json)"
                     );
                 } else {
                     for item in list {
@@ -974,7 +979,7 @@ async fn main() -> Result<()> {
                     }
                     if snapshot.malformed_entries > 0 {
                         println!(
-                            "[ufo] skipped malformed entries: {}",
+                            "[xbrd-selector] skipped malformed entries: {}",
                             snapshot.malformed_entries
                         );
                     }
@@ -985,7 +990,7 @@ async fn main() -> Result<()> {
                 let list = snapshot.store.summaries(snapshot.source.clone());
                 if list.is_empty() {
                     println!(
-                        "[ufo] no providers (OpenCode auth: env, XDG_DATA_HOME/opencode/auth.json, then ~/.local/share/opencode/auth.json)"
+                        "[xbrd-selector] no providers (OpenCode auth: env, XDG_DATA_HOME/opencode/auth.json, then ~/.local/share/opencode/auth.json)"
                     );
                 } else {
                     for item in list {
@@ -993,7 +998,7 @@ async fn main() -> Result<()> {
                     }
                     if snapshot.malformed_entries > 0 {
                         println!(
-                            "[ufo] skipped malformed entries: {}",
+                            "[xbrd-selector] skipped malformed entries: {}",
                             snapshot.malformed_entries
                         );
                     }
@@ -1004,16 +1009,22 @@ async fn main() -> Result<()> {
                 process.login(provider).await?;
                 let snapshot = auth::load_auth()?;
                 let summary = verify_login_summary(&snapshot, provider)?;
-                println!("[ufo] oauth login {}", format_provider_summary(&summary));
+                println!(
+                    "[xbrd-selector] oauth login {}",
+                    format_provider_summary(&summary)
+                );
             }
             AuthAction::Logout { provider } => {
                 let process = OpencodeAuthProcess::default();
                 process.logout(provider).await?;
                 let snapshot = auth::load_auth()?;
                 match verify_logout_summary(&snapshot, provider)? {
-                    Some(summary) => println!("[ufo] oauth logout {}", format_provider_summary(&summary)),
+                    Some(summary) => println!(
+                        "[xbrd-selector] oauth logout {}",
+                        format_provider_summary(&summary)
+                    ),
                     None => println!(
-                        "[ufo] oauth logout {}  source={} policy=ignored oauth=missing account=- enterprise=- metadata=-",
+                        "[xbrd-selector] oauth logout {}  source={} policy=ignored oauth=missing account=- enterprise=- metadata=-",
                         provider.as_str(),
                         snapshot.source,
                     ),
@@ -1041,7 +1052,7 @@ async fn main() -> Result<()> {
                 let catalog = local_model_catalog()?;
                 if catalog.is_empty() {
                     println!(
-                        "[ufo] no local providers (OpenCode config: OPENCODE_CONFIG_CONTENT, then XDG_CONFIG_HOME/opencode/opencode.json(c), then ~/.config/opencode/opencode.json(c))"
+                        "[xbrd-selector] no local providers (OpenCode config: OPENCODE_CONFIG_CONTENT, then XDG_CONFIG_HOME/opencode/opencode.json(c), then ~/.config/opencode/opencode.json(c))"
                     );
                 } else {
                     for entry in catalog.entries() {
@@ -1050,7 +1061,7 @@ async fn main() -> Result<()> {
                 }
                 if catalog.malformed_entries > 0 {
                     println!(
-                        "[ufo] skipped malformed local model entries: {}",
+                        "[xbrd-selector] skipped malformed local model entries: {}",
                         catalog.malformed_entries
                     );
                 }
@@ -1100,7 +1111,7 @@ mod tests {
     }
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ufo-cli-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("xbrd-selector-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1618,8 +1629,12 @@ mod tests {
 
     #[test]
     fn auth_provider_allowlist_rejects_unknown() {
-        assert!(Cli::try_parse_from(["ufo", "auth", "login", "--provider", "openai"]).is_ok());
-        assert!(Cli::try_parse_from(["ufo", "auth", "login", "--provider", "api"]).is_err());
+        assert!(
+            Cli::try_parse_from(["xbrd-selector", "auth", "login", "--provider", "openai"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["xbrd-selector", "auth", "login", "--provider", "api"]).is_err()
+        );
     }
 
     #[tokio::test]

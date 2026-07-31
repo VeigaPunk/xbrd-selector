@@ -2,9 +2,9 @@
 name = "ufo-auth"
 version = "0.1.0"
 edition = "2021"
-description = "Shared OpenCode auth reader for UFO CLIs"
+description = "Shared OpenCode auth reader for xbrd-selector CLIs"
 license = "BSD-3-Clause"
-repository = "https://github.com/VeigaPunk/ufogrokbd"
+repository = "https://github.com/VeigaPunk/xbrd-selector"
 
 [dependencies]
 anyhow = "=1.0.80"

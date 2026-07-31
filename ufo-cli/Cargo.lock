@@ -1826,7 +1826,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ufo-cli"
+name = "xbrd-selector"
 version = "0.1.0"
 dependencies = [
  "anyhow",

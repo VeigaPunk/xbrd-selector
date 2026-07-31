@@ -4,7 +4,7 @@ Beads-backed rover wrapper.
 
 Implementation is Rust-only. Pilot commands run through POSIX `sh`.
 This variant additionally requires `bd >= 1.1.2` on PATH and a project that already ran `bd init`.
-OpenCode auth is read-only and shared with `ufo-cli`.
+OpenCode auth is read-only and shared with `xbrd-selector` in the primary crate.
 OAuth login/logout is delegated to installed `opencode`; only `openai` and `github-copilot` are accepted initially.
 
 It uses `bd ready --claim --json` atomically, then runs the pilot, then closes on success.
@@ -15,7 +15,7 @@ It uses `bd ready --claim --json` atomically, then runs the pilot, then closes o
 cargo install --path ufo-cli-beads --locked --force
 ```
 
-This replaces the same `ufo` binary installed by `ufo-cli`.
+This legacy crate still installs the same `ufo` binary name.
 
 ## Use
 
