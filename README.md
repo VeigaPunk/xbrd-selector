@@ -6,7 +6,7 @@ Pure-Rust xbrd-selector rover CLIs.
 - `ufo-cli-beads/` — separate legacy beads (`bd >= 1.1.2`) mailbox wrapper
 - `xbrd-selector tui` — Ratatui dashboard/chat shell in the primary crate
 
-Implementation is Rust-only. The distributed artifact is a self-contained compiled executable; Bun/Node/npm/JS are intentionally not runtime or build dependencies under this Rust-only directive.
+Implementation and distribution are Rust-native. The release artifact is a self-contained compiled executable.
 Pilot commands intentionally run through POSIX `sh`.
 The beads variant additionally requires `bd >= 1.1.2` on PATH.
 
