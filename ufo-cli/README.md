@@ -2,7 +2,7 @@
 
 Local rover for xbrd-selector-style orchestration.
 
-Runtime is Rust/Ratatui. Packaging and distribution use Bun, but the installed `xbrd-selector` command does not require Bun. Pilot commands run through POSIX `sh`.
+Pure Rust. Local JSONL mailbox substrate. Pilot commands run through POSIX `sh`.
 OpenCode auth is read-only and shared with the legacy beads crate.
 OAuth login/logout is delegated to installed `opencode`; only `openai` and `github-copilot` are accepted initially.
 Local model discovery is read-only from OpenCode config: `OPENCODE_CONFIG_CONTENT`, then `XDG_CONFIG_HOME/opencode/opencode.json(c)`, then `~/.config/opencode/opencode.json(c)`.

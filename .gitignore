@@ -1,11 +1,7 @@
 /.SRCINFO
 /*.pkg.tar.zst
-/*.tgz
 /src/
 /pkg/
-/dist/
-/docs/
-/node_modules/
 /ufo-cli/target/
 /ufo-cli-beads/target/
 /ufo-auth/target/

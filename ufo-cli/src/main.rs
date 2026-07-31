@@ -38,8 +38,7 @@ const LOCAL_MODEL_MAX_MODEL_CHARS: usize = 128;
 #[derive(Parser, Debug)]
 #[command(
     name = "xbrd-selector",
-    version,
-    about = "xbrd-selector local rover CLI (Rust runtime, local JSONL mailbox)"
+    about = "xbrd-selector local rover CLI (pure Rust, local JSONL mailbox)"
 )]
 struct Cli {
     #[command(subcommand)]
