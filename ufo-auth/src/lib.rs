@@ -7,6 +7,12 @@ use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
+pub const OAUTH_PROVIDER_ALLOWLIST: [&str; 2] = ["openai", "github-copilot"];
+
+pub fn oauth_provider_allowed(provider_id: &str) -> bool {
+    OAUTH_PROVIDER_ALLOWLIST.contains(&provider_id)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthStore {
     providers: BTreeMap<String, ProviderEntry>,
@@ -54,6 +60,27 @@ pub struct OauthSummary {
     pub enterprise_url: Option<String>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct OauthAccessTokenRequest {
+    provider_id: String,
+    access_token: SecretString,
+    expires_at: u64,
+}
+
+impl OauthAccessTokenRequest {
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.expires_at < current_unix_secs()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
     Oauth,
@@ -81,8 +108,8 @@ pub enum ProviderPolicy {
 impl fmt::Display for ProviderPolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Usable => "usable",
-            Self::UnsupportedCredential => "unsupported",
+            Self::Usable => "supported",
+            Self::UnsupportedCredential => "ignored",
             Self::LocalModelConfig => "local-model",
         })
     }
@@ -188,21 +215,67 @@ impl AuthStore {
 
     pub fn usable_count(&self) -> usize {
         self.providers
-            .values()
-            .filter(|entry| matches!(entry.policy(), ProviderPolicy::Usable))
+            .iter()
+            .filter(|(provider_id, entry)| {
+                matches!(entry.policy(provider_id), ProviderPolicy::Usable)
+            })
             .count()
+    }
+
+    pub fn oauth_provider_ids(&self) -> Vec<String> {
+        self.providers
+            .iter()
+            .filter_map(|(provider_id, entry)| {
+                if entry.is_oauth() {
+                    Some(provider_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn oauth_summary(&self, provider_id: &str, source: AuthSource) -> Option<ProviderSummary> {
+        self.providers.get(provider_id).and_then(|entry| {
+            if entry.is_oauth() {
+                Some(entry.summary(provider_id, source))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn oauth_access_token_request(&self, provider_id: &str) -> Option<OauthAccessTokenRequest> {
+        if !oauth_provider_allowed(provider_id) {
+            return None;
+        }
+        match self.providers.get(provider_id) {
+            Some(ProviderEntry::Oauth(auth)) if auth.expires >= current_unix_secs() => {
+                Some(OauthAccessTokenRequest {
+                    provider_id: provider_id.to_string(),
+                    access_token: auth.access.clone(),
+                    expires_at: auth.expires,
+                })
+            }
+            _ => None,
+        }
     }
 }
 
 impl ProviderEntry {
+    fn is_oauth(&self) -> bool {
+        matches!(self, Self::Oauth(_))
+    }
+
     fn summary(&self, provider_id: &str, source: AuthSource) -> ProviderSummary {
         let provider_id = sanitize_terminal(provider_id);
+        let policy = self.policy(&provider_id);
         match self {
             Self::Oauth(auth) => ProviderSummary {
                 provider_id,
                 kind: ProviderKind::Oauth,
                 source,
-                policy: ProviderPolicy::Usable,
+                policy,
                 oauth: Some(OauthSummary {
                     expiry_state: if auth.expires >= current_unix_secs() {
                         ExpiryState::Valid
@@ -218,7 +291,7 @@ impl ProviderEntry {
                 provider_id,
                 kind: ProviderKind::Api,
                 source,
-                policy: ProviderPolicy::UnsupportedCredential,
+                policy,
                 oauth: None,
                 metadata_present: auth.metadata.is_some(),
             },
@@ -226,17 +299,19 @@ impl ProviderEntry {
                 provider_id,
                 kind: ProviderKind::Wellknown,
                 source,
-                policy: ProviderPolicy::UnsupportedCredential,
+                policy,
                 oauth: None,
                 metadata_present: false,
             },
         }
     }
 
-    fn policy(&self) -> ProviderPolicy {
+    fn policy(&self, provider_id: &str) -> ProviderPolicy {
         match self {
-            Self::Oauth(_) => ProviderPolicy::Usable,
-            Self::Api(_) | Self::Wellknown(_) => ProviderPolicy::UnsupportedCredential,
+            Self::Oauth(_) if oauth_provider_allowed(provider_id) => ProviderPolicy::Usable,
+            Self::Oauth(_) | Self::Api(_) | Self::Wellknown(_) => {
+                ProviderPolicy::UnsupportedCredential
+            }
         }
     }
 }
@@ -438,7 +513,7 @@ mod tests {
         let _guard = guard();
         let snapshot = parse_auth_content(
             r#"{
-                "provider-oauth": {
+                "openai": {
                   "type": "oauth",
                   "refresh": "r",
                   "access": "a",
@@ -484,6 +559,36 @@ mod tests {
             .find(|item| item.kind == ProviderKind::Wellknown)
             .unwrap();
         assert_eq!(wellknown.policy, ProviderPolicy::UnsupportedCredential);
+    }
+
+    #[test]
+    fn oauth_access_token_request() {
+        let _guard = guard();
+        let snapshot = parse_auth_content(
+            r#"{
+                "openai": {"type":"oauth","refresh":"r","access":"a","expires":9999999999},
+                "github-copilot": {"type":"oauth","refresh":"r2","access":"b","expires":1},
+                "custom": {"type":"oauth","refresh":"r3","access":"c","expires":9999999999}
+            }"#,
+            AuthSource::File,
+            None,
+        )
+        .unwrap();
+
+        let request = snapshot.store.oauth_access_token_request("openai").unwrap();
+        assert_eq!(request.provider_id(), "openai");
+        assert_eq!(request.expires_at(), 9_999_999_999);
+        assert!(!request.is_expired());
+
+        assert!(snapshot
+            .store
+            .oauth_access_token_request("github-copilot")
+            .is_none());
+        assert!(snapshot
+            .store
+            .oauth_access_token_request("custom")
+            .is_none());
+        assert!(snapshot.store.oauth_access_token_request("api").is_none());
     }
 
     #[test]

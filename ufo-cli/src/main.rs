@@ -4,7 +4,7 @@
 use anyhow::{bail, Context, Result};
 use auth::sanitize_terminal;
 use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
 use reqwest::redirect::Policy;
 use reqwest::Url;
@@ -104,8 +104,152 @@ enum ModelAction {
 enum AuthAction {
     /// List providers from OpenCode ~/.local/share/opencode/auth.json or ~/.ufo/auth.json
     List,
+    /// List provider policy and OAuth state
+    Providers,
+    /// Delegate OAuth login to opencode
+    Login {
+        #[arg(long)]
+        provider: OAuthProviderId,
+    },
+    /// Delegate OAuth logout to opencode
+    Logout {
+        #[arg(long)]
+        provider: OAuthProviderId,
+    },
     /// Show which store is active
     Status,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum OAuthProviderId {
+    #[value(name = "openai")]
+    OpenAI,
+    #[value(name = "github-copilot")]
+    GithubCopilot,
+}
+
+impl OAuthProviderId {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAI => "openai",
+            Self::GithubCopilot => "github-copilot",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OpencodeAuthProcess {
+    program: PathBuf,
+}
+
+impl Default for OpencodeAuthProcess {
+    fn default() -> Self {
+        Self {
+            program: PathBuf::from("opencode"),
+        }
+    }
+}
+
+impl OpencodeAuthProcess {
+    async fn login(&self, provider: OAuthProviderId) -> Result<()> {
+        let args = ["auth", "login", "--pure", "--provider", provider.as_str()];
+        self.run(args.as_slice()).await
+    }
+
+    async fn logout(&self, provider: OAuthProviderId) -> Result<()> {
+        let args = ["auth", "logout", "--provider", provider.as_str()];
+        self.run(args.as_slice()).await
+    }
+
+    async fn run(&self, args: &[&str]) -> Result<()> {
+        let status = Command::new(&self.program)
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .context("run opencode auth command")?;
+        if status.success() {
+            Ok(())
+        } else {
+            bail!("opencode auth command exited {:?}", status.code())
+        }
+    }
+}
+
+fn format_provider_summary(item: &auth::ProviderSummary) -> String {
+    let oauth_state = item
+        .oauth
+        .as_ref()
+        .map(|oauth| oauth.expiry_state.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let account_id = item
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.account_id.as_deref())
+        .map(sanitize_terminal)
+        .unwrap_or_else(|| "-".to_string());
+    let enterprise_url = item
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.enterprise_url.as_deref())
+        .map(sanitize_terminal)
+        .unwrap_or_else(|| "-".to_string());
+    format!(
+        "{}  source={} policy={} oauth={} account={} enterprise={} metadata={}",
+        sanitize_terminal(&item.provider_id),
+        item.source,
+        item.policy,
+        oauth_state,
+        account_id,
+        enterprise_url,
+        if item.metadata_present {
+            "present"
+        } else {
+            "-"
+        }
+    )
+}
+
+fn verify_login_summary(
+    snapshot: &auth::AuthSnapshot,
+    provider: OAuthProviderId,
+) -> Result<auth::ProviderSummary> {
+    let summary = snapshot
+        .store
+        .oauth_summary(provider.as_str(), snapshot.source.clone())
+        .with_context(|| format!("missing OAuth entry for {}", provider.as_str()))?;
+    if summary.policy != auth::ProviderPolicy::Usable {
+        bail!("OAuth provider {} is ignored", provider.as_str());
+    }
+    let oauth = summary.oauth.as_ref().context("missing OAuth state")?;
+    if oauth.expiry_state != auth::ExpiryState::Valid {
+        bail!("OAuth provider {} is expired", provider.as_str());
+    }
+    Ok(summary)
+}
+
+fn verify_logout_summary(
+    snapshot: &auth::AuthSnapshot,
+    provider: OAuthProviderId,
+) -> Result<Option<auth::ProviderSummary>> {
+    match snapshot
+        .store
+        .oauth_summary(provider.as_str(), snapshot.source.clone())
+    {
+        Some(summary) if summary.policy == auth::ProviderPolicy::Usable => {
+            let oauth = summary.oauth.as_ref().context("missing OAuth state")?;
+            if oauth.expiry_state == auth::ExpiryState::Valid {
+                bail!(
+                    "OAuth provider {} still usable after logout",
+                    provider.as_str()
+                );
+            }
+            Ok(Some(summary))
+        }
+        other => Ok(other),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,31 +911,7 @@ async fn main() -> Result<()> {
                     );
                 } else {
                     for item in list {
-                        let oauth = item
-                            .oauth
-                            .as_ref()
-                            .map(|oauth| {
-                                format!(
-                                    " expires={} account={} enterprise={}",
-                                    oauth.expiry_state,
-                                    oauth.account_id.as_deref().unwrap_or("-"),
-                                    oauth.enterprise_url.as_deref().unwrap_or("-")
-                                )
-                            })
-                            .unwrap_or_default();
-                        println!(
-                            "{}  ({} source={} policy={} metadata={}){}",
-                            item.provider_id,
-                            item.kind,
-                            item.source,
-                            item.policy,
-                            if item.metadata_present {
-                                "present"
-                            } else {
-                                "-"
-                            },
-                            oauth
-                        );
+                        println!("{}", format_provider_summary(&item));
                     }
                     if snapshot.malformed_entries > 0 {
                         println!(
@@ -799,6 +919,45 @@ async fn main() -> Result<()> {
                             snapshot.malformed_entries
                         );
                     }
+                }
+            }
+            AuthAction::Providers => {
+                let snapshot = auth::load_auth()?;
+                let list = snapshot.store.summaries(snapshot.source.clone());
+                if list.is_empty() {
+                    println!(
+                        "[ufo] no providers (OpenCode auth: env, XDG_DATA_HOME/opencode/auth.json, then ~/.local/share/opencode/auth.json)"
+                    );
+                } else {
+                    for item in list {
+                        println!("{}", format_provider_summary(&item));
+                    }
+                    if snapshot.malformed_entries > 0 {
+                        println!(
+                            "[ufo] skipped malformed entries: {}",
+                            snapshot.malformed_entries
+                        );
+                    }
+                }
+            }
+            AuthAction::Login { provider } => {
+                let process = OpencodeAuthProcess::default();
+                process.login(provider).await?;
+                let snapshot = auth::load_auth()?;
+                let summary = verify_login_summary(&snapshot, provider)?;
+                println!("[ufo] oauth login {}", format_provider_summary(&summary));
+            }
+            AuthAction::Logout { provider } => {
+                let process = OpencodeAuthProcess::default();
+                process.logout(provider).await?;
+                let snapshot = auth::load_auth()?;
+                match verify_logout_summary(&snapshot, provider)? {
+                    Some(summary) => println!("[ufo] oauth logout {}", format_provider_summary(&summary)),
+                    None => println!(
+                        "[ufo] oauth logout {}  source={} policy=ignored oauth=missing account=- enterprise=- metadata=-",
+                        provider.as_str(),
+                        snapshot.source,
+                    ),
                 }
             }
             AuthAction::Status => {
@@ -1171,5 +1330,108 @@ mod tests {
         assert_eq!(loaded[1].id, "y");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    fn fake_opencode(log: &Path, exit_code: i32) -> PathBuf {
+        let bin_dir = log.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("opencode");
+        let script_body = format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> '{}'\nexit {}\n",
+            log.display(),
+            exit_code
+        );
+        fs::write(&script, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        script
+    }
+
+    struct PathGuard(String);
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            std::env::set_var("PATH", &self.0);
+        }
+    }
+
+    fn with_fake_opencode(log: &Path, exit_code: i32) -> PathGuard {
+        let script = fake_opencode(log, exit_code);
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", script.parent().unwrap().display(), old_path);
+        std::env::set_var("PATH", &new_path);
+        PathGuard(old_path)
+    }
+
+    #[test]
+    fn auth_provider_allowlist_rejects_unknown() {
+        assert!(Cli::try_parse_from(["ufo", "auth", "login", "--provider", "openai"]).is_ok());
+        assert!(Cli::try_parse_from(["ufo", "auth", "login", "--provider", "api"]).is_err());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn opencode_auth_login_uses_exact_argv_and_verifies_snapshot() {
+        let _guard = env_guard();
+        let dir = temp_dir();
+        let log = dir.join("argv.log");
+        let _path_guard = with_fake_opencode(&log, 0);
+        let process = OpencodeAuthProcess {
+            program: dir.join("bin").join("opencode"),
+        };
+        std::env::set_var(
+            "OPENCODE_AUTH_CONTENT",
+            r#"{
+                "openai": {
+                    "type": "oauth",
+                    "refresh": "refresh-secret",
+                    "access": "access-secret",
+                    "expires": 9999999999,
+                    "accountId": "acct-1",
+                    "enterpriseUrl": "https://example.invalid"
+                }
+            }"#,
+        );
+
+        process.login(OAuthProviderId::OpenAI).await.unwrap();
+        let snapshot = auth::load_auth().unwrap();
+        let summary = verify_login_summary(&snapshot, OAuthProviderId::OpenAI).unwrap();
+        let rendered = format_provider_summary(&summary);
+        assert!(rendered.contains("openai"));
+        assert!(rendered.contains("supported"));
+        assert!(rendered.contains("valid"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(!rendered.contains("access-secret"));
+
+        let argv = fs::read_to_string(&log).unwrap();
+        assert_eq!(argv.trim(), "auth login --pure --provider openai");
+        std::env::remove_var("OPENCODE_AUTH_CONTENT");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn opencode_auth_logout_propagates_nonzero_exit() {
+        let _guard = env_guard();
+        let dir = temp_dir();
+        let log = dir.join("argv.log");
+        let _path_guard = with_fake_opencode(&log, 37);
+        let process = OpencodeAuthProcess {
+            program: dir.join("bin").join("opencode"),
+        };
+
+        let err = process
+            .logout(OAuthProviderId::GithubCopilot)
+            .await
+            .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("37") || message.contains("exited"));
+
+        let argv = fs::read_to_string(&log).unwrap();
+        assert_eq!(argv.trim(), "auth logout --provider github-copilot");
     }
 }

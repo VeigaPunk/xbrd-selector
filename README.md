@@ -9,7 +9,8 @@ Implementation is Rust-only. Pilot commands intentionally run through POSIX `sh`
 The beads variant additionally requires `bd >= 1.1.2` on PATH.
 
 Auth is read-only from OpenCode: `OPENCODE_AUTH_CONTENT`, then `XDG_DATA_HOME/opencode/auth.json`, then `~/.local/share/opencode/auth.json`.
-Only OAuth entries are selectable; API and wellknown entries are listed as unsupported.
+OAuth login/logout is delegated to installed `opencode` (`auth login --pure --provider <id>`, `auth logout --provider <id>`).
+Only `openai` and `github-copilot` are allowed initially; API and wellknown entries are listed as ignored.
 
 ## Install
 
