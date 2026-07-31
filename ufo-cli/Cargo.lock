@@ -1826,26 +1826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xbrd-selector"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm 0.29.0",
- "dirs",
- "fs2",
- "json5",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "ufo-auth",
- "uuid",
-]
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2301,6 +2281,26 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "xbrd-selector"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm 0.29.0",
+ "dirs",
+ "fs2",
+ "json5",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ufo-auth",
+ "uuid",
+]
 
 [[package]]
 name = "yoke"

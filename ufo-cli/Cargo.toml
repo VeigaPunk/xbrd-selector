@@ -1,6 +1,6 @@
 [package]
 name = "xbrd-selector"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "xbrd-selector local rover CLI (pure Rust, local mailbox) - accepts and runs operations on the host."
 readme = "README.md"
