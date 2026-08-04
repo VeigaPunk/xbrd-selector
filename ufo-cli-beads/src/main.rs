@@ -278,8 +278,7 @@ async fn close_issue(project: &Path, id: &str) -> Result<()> {
 
 async fn list_ready(project: &Path) -> Result<Vec<BdIssue>> {
     let raw = bd_json(project, ["ready", "--claim"]).await?;
-    let issues: Vec<BdIssue> = serde_json::from_str(&raw).unwrap_or_default();
-    Ok(issues)
+    serde_json::from_str(&raw).context("parse bd ready JSON")
 }
 
 fn is_safe_issue_id(id: &str) -> bool {
@@ -661,6 +660,19 @@ mod tests {
         let trace = fs::read_to_string(&log).unwrap();
         assert!(trace.contains("ready --claim --json"));
         assert!(!trace.contains("list --status=open"));
+    }
+
+    #[tokio::test]
+    async fn malformed_ready_json_is_reported() {
+        let _guard = test_guard().await;
+        let dir = temp_dir();
+        let log = dir.join("trace.log");
+        let _path_guard = with_fake_bd(&log, "not-json", 0);
+        let work_root = dir.join("work");
+        fs::create_dir_all(&work_root).unwrap();
+
+        let err = poll_once(&dir, &work_root).await.unwrap_err();
+        assert!(format!("{err:#}").contains("parse bd ready JSON"));
     }
 
     #[tokio::test]
