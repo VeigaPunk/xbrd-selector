@@ -393,11 +393,9 @@ fn parse_provider_map(value: Value) -> Result<(BTreeMap<String, ProviderEntry>, 
         let Some(wrapper_object) = wrapper.as_object() else {
             bail!("legacy UFO wrapper `providers` must be an object");
         };
-        if object.len() == 1 {
-            wrapper_object.clone()
-        } else {
-            object.clone()
-        }
+        // `providers` is the legacy wrapper; ignore sibling metadata fields
+        // rather than treating them as malformed provider entries.
+        wrapper_object.clone()
     } else {
         object.clone()
     };
@@ -559,6 +557,23 @@ mod tests {
             .find(|item| item.kind == ProviderKind::Wellknown)
             .unwrap();
         assert_eq!(wellknown.policy, ProviderPolicy::UnsupportedCredential);
+    }
+
+    #[test]
+    fn wrapper_ignores_sibling_metadata() {
+        let snapshot = parse_auth_content(
+            r#"{
+                "providers": {
+                  "openai": {"type":"api","key":"secret"}
+                },
+                "version": 1
+            }"#,
+            AuthSource::Env,
+            None,
+        )
+        .unwrap();
+        assert_eq!(snapshot.store.len(), 1);
+        assert_eq!(snapshot.malformed_entries, 0);
     }
 
     #[test]
