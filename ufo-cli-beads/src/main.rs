@@ -126,7 +126,9 @@ mod rfc3339_datetime {
             where
                 E: serde::de::Error,
             {
-                Self::visit_i64(self, value as i64)
+                let value = i64::try_from(value)
+                    .map_err(|_| E::custom("invalid unix timestamp"))?;
+                Self::visit_i64(self, value)
             }
 
             fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
@@ -552,6 +554,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rover.enrolled_at.to_rfc3339(), "2024-01-02T03:04:05+00:00");
+    }
+
+    #[test]
+    fn unix_timestamp_overflow_is_rejected() {
+        let result: std::result::Result<RoverEntry, _> = serde_json::from_str(
+            r#"{"id":"rover-1","name":"bad","units":1,"tags":[],"enrolled_at":18446744073709551615}"#,
+        );
+        assert!(result.is_err());
     }
 
     fn fake_bd_dir(log: &Path, ready_json: &str, ready_exit: i32) -> PathBuf {
