@@ -5,7 +5,7 @@ Beads-backed rover wrapper.
 Implementation is Rust-only. Pilot commands run through POSIX `sh`.
 This variant additionally requires `bd >= 1.1.2` on PATH and a project that already ran `bd init`.
 OpenCode auth is read-only and shared with `xbrd-selector` in the primary crate.
-OAuth login/logout is delegated to installed `opencode`; only `openai` and `github-copilot` are accepted initially.
+OAuth login/logout is delegated to installed `opencode`; only `openai` (ChatGPT) and `xai` (Grok) are accepted for OAuth; Claude/Anthropic and github-copilot are not Usable.
 
 It uses `bd ready --claim --json` atomically, then runs the pilot, then closes on success.
 

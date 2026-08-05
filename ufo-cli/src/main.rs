@@ -21,8 +21,10 @@ pub use ufo_auth as auth;
 pub use ufo_auth::sanitize_terminal;
 use uuid::Uuid;
 
+mod cloud_model_catalog;
 mod opencode_local_models;
 mod tui;
+use cloud_model_catalog::{cloud_model_entries, format_cloud_model_entry};
 use opencode_local_models::{
     format_local_model_entry, load_local_model_catalog, LocalModelCatalog,
 };
@@ -100,7 +102,7 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ModelAction {
-    /// List configured local provider/model pairs
+    /// List cloud catalog (Grok + ChatGPT) and local loopback provider/model pairs
     List,
     /// Send one prompt to a strictly local OpenAI-compatible model endpoint
     Prompt {
@@ -139,15 +141,15 @@ enum AuthAction {
 enum OAuthProviderId {
     #[value(name = "openai")]
     OpenAI,
-    #[value(name = "github-copilot")]
-    GithubCopilot,
+    #[value(name = "xai")]
+    Xai,
 }
 
 impl OAuthProviderId {
     fn as_str(self) -> &'static str {
         match self {
             Self::OpenAI => "openai",
-            Self::GithubCopilot => "github-copilot",
+            Self::Xai => "xai",
         }
     }
 }
@@ -1051,12 +1053,17 @@ async fn main() -> Result<()> {
         }
         Commands::Model { action } => match action {
             ModelAction::List => {
+                println!("[xbrd-selector] cloud catalog (OpenAI ChatGPT + xAI Grok only)");
+                for entry in cloud_model_entries() {
+                    println!("{}", format_cloud_model_entry(&entry));
+                }
                 let catalog = local_model_catalog()?;
                 if catalog.is_empty() {
                     println!(
                         "[xbrd-selector] no local providers (OpenCode config: OPENCODE_CONFIG_CONTENT, then XDG_CONFIG_HOME/opencode/opencode.json(c), then ~/.config/opencode/opencode.json(c))"
                     );
                 } else {
+                    println!("[xbrd-selector] local loopback tier");
                     for entry in catalog.entries() {
                         println!("{}", format_local_model_entry(&entry));
                     }
@@ -1643,8 +1650,23 @@ mod tests {
             Cli::try_parse_from(["xbrd-selector", "auth", "login", "--provider", "openai"]).is_ok()
         );
         assert!(
+            Cli::try_parse_from(["xbrd-selector", "auth", "login", "--provider", "xai"]).is_ok()
+        );
+        assert!(
             Cli::try_parse_from(["xbrd-selector", "auth", "login", "--provider", "api"]).is_err()
         );
+        assert!(
+            Cli::try_parse_from(["xbrd-selector", "auth", "login", "--provider", "claude"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "xbrd-selector",
+            "auth",
+            "login",
+            "--provider",
+            "github-copilot"
+        ])
+        .is_err());
     }
 
     #[tokio::test]
@@ -1697,14 +1719,39 @@ mod tests {
             program: dir.join("bin").join("opencode"),
         };
 
-        let err = process
-            .logout(OAuthProviderId::GithubCopilot)
-            .await
-            .unwrap_err();
+        let err = process.logout(OAuthProviderId::Xai).await.unwrap_err();
         let message = format!("{err:#}");
         assert!(message.contains("37") || message.contains("exited"));
 
         let argv = fs::read_to_string(&log).unwrap();
-        assert_eq!(argv.trim(), "auth logout --provider github-copilot");
+        assert_eq!(argv.trim(), "auth logout --provider xai");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn opencode_auth_login_xai_argv() {
+        let _guard = env_guard();
+        let dir = temp_dir();
+        let log = dir.join("argv.log");
+        let _path_guard = with_fake_opencode(&log, 0);
+        let process = OpencodeAuthProcess {
+            program: dir.join("bin").join("opencode"),
+        };
+        std::env::set_var(
+            "OPENCODE_AUTH_CONTENT",
+            r#"{
+                "xai": {
+                    "type": "oauth",
+                    "refresh": "refresh-secret",
+                    "access": "access-secret",
+                    "expires": 9999999999
+                }
+            }"#,
+        );
+
+        process.login(OAuthProviderId::Xai).await.unwrap();
+        let argv = fs::read_to_string(&log).unwrap();
+        assert_eq!(argv.trim(), "auth login --pure --provider xai");
+        std::env::remove_var("OPENCODE_AUTH_CONTENT");
     }
 }

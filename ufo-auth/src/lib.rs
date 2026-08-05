@@ -7,10 +7,20 @@ use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
-pub const OAUTH_PROVIDER_ALLOWLIST: [&str; 2] = ["openai", "github-copilot"];
+/// Cloud OAuth providers operators may login/logout (Grok/xAI + ChatGPT/OpenAI only).
+pub const OAUTH_PROVIDER_ALLOWLIST: [&str; 2] = ["openai", "xai"];
+
+/// Provider ids that must never become Usable on the cloud surface (no-claude policy).
+pub const OAUTH_PROVIDER_DENYLIST: [&str; 2] = ["claude", "anthropic"];
 
 pub fn oauth_provider_allowed(provider_id: &str) -> bool {
     OAUTH_PROVIDER_ALLOWLIST.contains(&provider_id)
+}
+
+pub fn oauth_provider_denied(provider_id: &str) -> bool {
+    OAUTH_PROVIDER_DENYLIST.contains(&provider_id)
+        || provider_id.starts_with("claude")
+        || provider_id.starts_with("anthropic")
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -582,7 +592,8 @@ mod tests {
         let snapshot = parse_auth_content(
             r#"{
                 "openai": {"type":"oauth","refresh":"r","access":"a","expires":9999999999},
-                "github-copilot": {"type":"oauth","refresh":"r2","access":"b","expires":1},
+                "xai": {"type":"oauth","refresh":"r-x","access":"ax","expires":9999999999},
+                "github-copilot": {"type":"oauth","refresh":"r2","access":"b","expires":9999999999},
                 "custom": {"type":"oauth","refresh":"r3","access":"c","expires":9999999999}
             }"#,
             AuthSource::File,
@@ -595,6 +606,10 @@ mod tests {
         assert_eq!(request.expires_at(), 9_999_999_999);
         assert!(!request.is_expired());
 
+        let xai = snapshot.store.oauth_access_token_request("xai").unwrap();
+        assert_eq!(xai.provider_id(), "xai");
+
+        // Copilot demoted: present oauth is never Usable / never yields tokens
         assert!(snapshot
             .store
             .oauth_access_token_request("github-copilot")
@@ -604,6 +619,59 @@ mod tests {
             .oauth_access_token_request("custom")
             .is_none());
         assert!(snapshot.store.oauth_access_token_request("api").is_none());
+    }
+
+    #[test]
+    fn oauth_allowlist_membership() {
+        assert_eq!(OAUTH_PROVIDER_ALLOWLIST, ["openai", "xai"]);
+        assert!(oauth_provider_allowed("openai"));
+        assert!(oauth_provider_allowed("xai"));
+        assert!(!oauth_provider_allowed("github-copilot"));
+        assert!(!oauth_provider_allowed("claude"));
+        assert!(!oauth_provider_allowed("anthropic"));
+        assert!(oauth_provider_denied("claude"));
+        assert!(oauth_provider_denied("anthropic"));
+        assert!(oauth_provider_denied("claude-3-5-sonnet"));
+    }
+
+    #[test]
+    fn claude_and_copilot_oauth_never_usable() {
+        let snapshot = parse_auth_content(
+            r#"{
+                "openai": {"type":"oauth","refresh":"r","access":"a","expires":9999999999},
+                "xai": {"type":"oauth","refresh":"r","access":"a","expires":9999999999},
+                "claude": {"type":"oauth","refresh":"r","access":"a","expires":9999999999},
+                "anthropic": {"type":"oauth","refresh":"r","access":"a","expires":9999999999},
+                "github-copilot": {"type":"oauth","refresh":"r","access":"a","expires":9999999999}
+            }"#,
+            AuthSource::File,
+            None,
+        )
+        .unwrap();
+        let items = snapshot.store.summaries(snapshot.source.clone());
+        let policy = |id: &str| {
+            items
+                .iter()
+                .find(|item| item.provider_id == id)
+                .map(|item| item.policy)
+                .unwrap()
+        };
+        assert_eq!(policy("openai"), ProviderPolicy::Usable);
+        assert_eq!(policy("xai"), ProviderPolicy::Usable);
+        assert_eq!(policy("claude"), ProviderPolicy::UnsupportedCredential);
+        assert_eq!(policy("anthropic"), ProviderPolicy::UnsupportedCredential);
+        assert_eq!(
+            policy("github-copilot"),
+            ProviderPolicy::UnsupportedCredential
+        );
+        assert!(snapshot
+            .store
+            .oauth_access_token_request("claude")
+            .is_none());
+        assert!(snapshot
+            .store
+            .oauth_access_token_request("anthropic")
+            .is_none());
     }
 
     #[test]

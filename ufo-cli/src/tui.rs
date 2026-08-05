@@ -1,4 +1,5 @@
 use crate::auth::{self, ProviderPolicy, ProviderSummary};
+use crate::cloud_model_catalog::{cloud_model_entries, CloudModelEntry};
 use crate::opencode_local_models::LocalModelEntry;
 use crate::{
     load_mailbox, load_rovers, post_local_model_prompt, sanitize_terminal, Operation, RoverEntry,
@@ -116,7 +117,10 @@ impl From<Operation> for JobView {
 pub struct Snapshot {
     pub rovers: Vec<RoverView>,
     pub jobs: Vec<JobView>,
+    /// Local loopback models (chat / model prompt only).
     pub models: Vec<LocalModelEntry>,
+    /// Curated cloud catalog (OpenAI + xAI); display only.
+    pub cloud_models: Vec<CloudModelEntry>,
     pub auth: Vec<ProviderSummary>,
     pub status: String,
 }
@@ -149,6 +153,7 @@ pub struct App {
     pub rovers: Vec<RoverView>,
     pub jobs: Vec<JobView>,
     pub models: Vec<LocalModelEntry>,
+    pub cloud_models: Vec<CloudModelEntry>,
     pub auth: Vec<ProviderSummary>,
     pub selected_job: usize,
     pub selected_model: usize,
@@ -171,6 +176,7 @@ impl Default for App {
             rovers: vec![],
             jobs: vec![],
             models: vec![],
+            cloud_models: vec![],
             auth: vec![],
             selected_job: 0,
             selected_model: 0,
@@ -197,6 +203,7 @@ impl App {
         self.rovers = snapshot.rovers;
         self.jobs = snapshot.jobs;
         self.models = snapshot.models;
+        self.cloud_models = snapshot.cloud_models;
         self.auth = snapshot.auth;
         self.status = snapshot.status;
 
@@ -617,6 +624,7 @@ fn load_snapshot() -> Snapshot {
             vec![]
         }
     };
+    let cloud_models = cloud_model_entries();
     let auth = match auth::load_auth() {
         Ok(snapshot) => snapshot.store.summaries(snapshot.source.clone()),
         Err(err) => {
@@ -628,6 +636,7 @@ fn load_snapshot() -> Snapshot {
         rovers,
         jobs,
         models,
+        cloud_models,
         auth,
         status: if status.is_empty() {
             "ready".to_string()
@@ -870,9 +879,50 @@ fn render_jobs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_models(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let rows = if app.models.is_empty() {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let cloud_rows = if app.cloud_models.is_empty() {
         vec![Row::new(vec![
             Cell::from("(none)"),
+            Cell::from("-"),
+            Cell::from("-"),
+        ])]
+    } else {
+        app.cloud_models
+            .iter()
+            .map(|model| {
+                Row::new(vec![
+                    Cell::from(model.provider_id.clone()),
+                    Cell::from(model.model_id.clone()),
+                    Cell::from(model.origin),
+                ])
+            })
+            .collect()
+    };
+    let cloud_table = Table::new(
+        cloud_rows,
+        [
+            Constraint::Length(12),
+            Constraint::Min(20),
+            Constraint::Length(10),
+        ],
+    )
+    .header(Row::new(vec!["provider", "model", "source"]).style(Style::default().fg(Color::Cyan)))
+    .block(
+        Block::default()
+            .title("Cloud catalog (OpenAI ChatGPT + xAI Grok)")
+            .borders(Borders::ALL),
+    )
+    .column_spacing(1);
+    frame.render_widget(cloud_table, layout[0]);
+
+    let local_rows = if app.models.is_empty() {
+        vec![Row::new(vec![
+            Cell::from("(none)"),
+            Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
         ])]
@@ -898,12 +948,12 @@ fn render_models(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             })
             .collect()
     };
-    let table = Table::new(
-        rows,
+    let local_table = Table::new(
+        local_rows,
         [
+            Constraint::Length(12),
             Constraint::Length(16),
-            Constraint::Length(20),
-            Constraint::Min(24),
+            Constraint::Min(20),
             Constraint::Length(8),
         ],
     )
@@ -913,11 +963,11 @@ fn render_models(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     )
     .block(
         Block::default()
-            .title("Safe local OpenCode models")
+            .title("Local loopback (chat / model prompt)")
             .borders(Borders::ALL),
     )
     .column_spacing(1);
-    frame.render_widget(table, area);
+    frame.render_widget(local_table, layout[1]);
 }
 
 fn render_auth(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -1206,6 +1256,11 @@ mod tests {
                 endpoint: "http://127.0.0.1:11434/v1".into(),
                 origin: "builtin",
             }],
+            cloud_models: vec![CloudModelEntry {
+                provider_id: "xai".into(),
+                model_id: "grok-4.5".into(),
+                origin: "catalog",
+            }],
             auth: vec![ProviderSummary {
                 provider_id: "openai".into(),
                 kind: auth::ProviderKind::Oauth,
@@ -1309,10 +1364,12 @@ mod tests {
         });
         app.refresh(snapshot);
         app.screen = Screen::Models;
-        let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let view = format!("{}", terminal.backend());
         assert!(view.contains("http://127.0.0.1:11434/v1"));
+        assert!(view.contains("Cloud catalog") || view.contains("grok-4.5"));
+        assert!(view.contains("Local loopback") || view.contains("ollama"));
     }
 
     #[test]
