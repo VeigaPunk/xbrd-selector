@@ -456,8 +456,8 @@ mod rfc3339_datetime {
             where
                 E: serde::de::Error,
             {
-                let value = i64::try_from(value)
-                    .map_err(|_| E::custom("invalid unix timestamp"))?;
+                let value =
+                    i64::try_from(value).map_err(|_| E::custom("invalid unix timestamp"))?;
                 Self::visit_i64(self, value)
             }
 
