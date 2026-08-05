@@ -7,3 +7,6 @@
 /ufo-auth/target/
 **/*.rlib
 **/*.rmeta
+
+# xbgst orch / local evidence (never ship)
+.xbgst/
