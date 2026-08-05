@@ -63,3 +63,15 @@ ufo start --project /path/to/project
 
 `ufo model prompt --provider ollama/llama3.2 --prompt hello` resolves a local provider/model pair from config or a built-in loopback template.
 `ufo tui` opens the Ratatui dashboard/chat shell.
+
+## Related stack
+
+| Piece | Role |
+| --- | --- |
+| [xbrd-spark](https://github.com/VeigaPunk/xbrd-spark) (`sekhmet`) | L3 pure-execution swarm (global cap **64** concurrent workers) |
+| [xbgst](https://github.com/VeigaPunk/xbgst) / Grok host | Judge-owned orchestration; native concurrency hardcap 16 (not L3) |
+| [ds4cc-marketplace](https://github.com/VeigaPunk/ds4cc-marketplace) | Curated plugins including packaged `xbrd-selector` for Grok/Codex/Kimi |
+| [xbrd-sol-ultra](https://github.com/VeigaPunk/xbrd-sol-ultra) | Sol Ultra root judge + one `sekhmet swarm -j 64` wave per round |
+| [xbrd-gdsp-fknpft](https://github.com/VeigaPunk/ds4cc-marketplace/tree/main/marketplace/plugins/xbrd-gdsp-fknpft) | Multimodel dispatch (`xask` / xbreed) on agent CLIs |
+
+Selector is the rover/model UI surface; Sekhmet is the L3 worker plane; xbgst/sol-ultra own planning and Pareto integration above L3.
