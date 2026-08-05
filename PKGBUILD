@@ -1,7 +1,7 @@
 # Maintainer: VeigaPunk
 
 pkgname=xbrd-selector
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=2
 pkgdesc="Pure Rust xbrd-selector local rover CLI"
 arch=('x86_64')

@@ -1,6 +1,6 @@
 [package]
 name = "ufo-cli-beads"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Legacy UFO local rover CLI (pure Rust) using beads as mailbox substrate"
 readme = "README.md"
